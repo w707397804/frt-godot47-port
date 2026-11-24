@@ -101,7 +101,9 @@ jobs:
           printf '%s\n' "deb [trusted=yes] $ARCHIVE bullseye main contrib non-free" > /etc/apt/sources.list
           printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
           apt-get update
-          apt-get install -y --no-install-recommends \
+          # --allow-downgrades 必需：镜像自带 libc6 +deb11u14 / perl-base +deb11u5，
+          # archive 只有 u11 / u3，而 libc6-dev 要求 libc6 版本号严格相等。
+          apt-get install -y --allow-downgrades --no-install-recommends \
             ca-certificates curl git rsync python3 python3-pip file tar xz-utils \
             build-essential pkg-config gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           pip3 install -q "scons>=4.5"

@@ -254,3 +254,8 @@ typedef void (*___glTexStorage2D___)(GLenum target, GLsizei levels, GLenum inter
 typedef void (*___glTexStorage3D___)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
 typedef void (*___glGetInternalformativ___)(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint *params);
 typedef void (*___glFramebufferTextureMultiviewOVR___)(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint baseViewIndex, GLsizei numViews);
+// 4.7 的 GLES3 驱动在 multiview（非 ANDROID）分支里调用了桌面 GL 的 glTexImage3DMultisample。
+// GLES3 头里没有这个符号，只能靠这张函数指针表补上：
+// 本机 PowerVR GE8300 不导出它 ⇒ dlsym 得 0，但该分支只在 multiview 渲染时才会走到，
+// 我们不做 multiview，运行时不会调用（若将来要用，需先判空）。
+typedef void (*___glTexImage3DMultisample___)(GLenum target, GLsizei samples, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations);
