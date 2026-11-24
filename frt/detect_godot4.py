@@ -81,6 +81,10 @@ def configure_cross(env):
 		env['CC'] = triple + '-gcc'
 		env['CXX'] = triple + '-g++'
 	env['FRT_PKG_CONFIG'] = triple + '-pkg-config'
+	# 交叉链接时 libSDL2.so 自身的依赖（libX11 / libgbm / libpulse / libdrm…）在 sysroot 里
+	# 不全，ld 会把它们的符号算成"未定义"而链接失败。那些库由**目标机**在运行时提供
+	# （掌机上是厂商改造版 SDL2，走 /usr/trimui/lib），故允许共享库带未解析符号。
+	env.Append(LINKFLAGS=['-Wl,--allow-shlib-undefined'])
 
 def configure_target(env):
 	pass # use engine default
@@ -100,12 +104,14 @@ def configure_misc(env):
         env['LD'] = 'clang++'
     if env['use_static_cpp']:
         env.Append(LINKFLAGS=['-static-libgcc', '-static-libstdc++'])
-    # Godot 4.7 默认 arch="auto"（产物名里的 .auto. 就是它），而 thirdparty/zstd 的
-    # SCsub 用 env["arch"] 精确匹配来决定要不要编 x86 的 .S 汇编循环：
-    # arch=auto ⇒ 不编 .S；但 C 侧 __x86_64__ 仍把 ZSTD_ENABLE_ASM_X86_64_BMI2 打开
-    # ⇒ 链接期 HUF_decompress4X{1,2}_usingDTable_internal_fast_asm_loop 未定义。
-    # 直接关掉 zstd 的 asm 路径（退回 C 实现，解压差个位数百分比，本项目无所谓）。
-    env.Append(CPPDEFINES=['ZSTD_DISABLE_ASM'])
+    # Godot 4.7 默认 arch="auto"（产物名里的 .auto. 就是它），而 thirdparty/ 下几个库
+    # 用 env["arch"] 精确匹配来决定要不要编 .S 汇编：
+    #   arch=auto ⇒ 不编 .S；但 C 侧仍按编译器预定义宏启用 SIMD 路径 ⇒ 链接期未定义符号。
+    # 已确认的两处（都是这条路子，不是各自独立的 bug）：
+    #   - zstd  x86: HUF_decompress4X*_usingDTable_internal_fast_asm_loop
+    #   - libpng arm: png_riffle_palette_neon / png_do_expand_palette_*_neon
+    # 直接用官方关断宏（pngpriv.h:136 注释原文就写着 put -DPNG_ARM_NEON_OPT=0 in CPPFLAGS）。
+    env.Append(CPPDEFINES=['ZSTD_DISABLE_ASM', 'PNG_ARM_NEON_OPT=0'])
 
 def configure(env):
 	configure_compiler(env)
