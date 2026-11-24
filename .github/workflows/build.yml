@@ -207,6 +207,7 @@ jobs:
           scons platform=frt target=template_release \
                 frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
                 vulkan=false openxr=false optimize=speed debug_symbols=no \
+                disable_path_overrides=no \
                 -j"$(nproc)" 2>&1 | tee /tmp/build.log
           rc=$?
           echo "=========== build exit=$rc ==========="
@@ -230,9 +231,9 @@ jobs:
             echo "--- GLIBC 需求上界（掌机 = 2.33，超过就跑不了）---"
             aarch64-linux-gnu-objdump -T "$f" 2>/dev/null \
               | grep -o 'GLIBC_2\.[0-9]*' | sort -u | tail -5
-            echo "--- GLIBCXX 需求（静态链接应为空）---"
-            aarch64-linux-gnu-objdump -T "$f" 2>/dev/null \
-              | grep -o 'GLIBCXX_[0-9.]*' | sort -u | tail -5
+          echo "--- GLIBCXX 需求（静态链接应为空；grep 无匹配返回 1，必须 || true）---"
+          aarch64-linux-gnu-objdump -T "$f" 2>/dev/null \
+              | grep -o 'GLIBCXX_[0-9.]*' | sort -u | tail -5 || true
           done
 
       - uses: actions/upload-artifact@v4
