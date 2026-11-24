@@ -56,12 +56,13 @@ jobs:
       # 全量编译本身 20 秒内就会暴露平台代码错误，冒烟不但没提速还曾假绿过一次。
       - name: build (full)
         run: |
+          set -o pipefail
           cd "$SRC"
           # vulkan=false 必须有：Godot 默认 vulkan=true，会定义 VULKAN_ENABLED，
           # 进而 include 4.7 里已改名的 drivers/vulkan/rendering_device_vulkan.h
           scons platform=frt target=template_release use_llvm=yes \
                 vulkan=false openxr=false -j"$(nproc)" 2>&1 | tee /tmp/build.log
-          rc=${PIPESTATUS[0]}
+          rc=$?
           echo "=========== build exit=$rc ==========="
           if [ "$rc" != "0" ]; then
             grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -120 || true
@@ -87,6 +88,11 @@ jobs:
     timeout-minutes: 300
     container:
       image: debian:bullseye
+    # ★ 容器里 run 的默认 shell 是 dash，不支持 ${PIPESTATUS[0]}（会 Bad substitution 退出 2，
+    #   明明 scons 已经成功却把整步判失败）。显式用 bash。
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: bootstrap toolchain
         run: |
@@ -180,14 +186,25 @@ jobs:
           rsync -a --exclude=.git --exclude='.github' "$GITHUB_WORKSPACE/frt/" "$SRC/platform/frt/"
           ls "$SRC/platform/frt" | head -30
 
+      # 每轮全量编译 ~27 分钟，太贵。scons 靠 .sconsign.dblite 判增量，
+      # 所以两个一起缓存；key 带上 frt/ 与 workflow 的哈希 ⇒ 代码/参数一变立刻换新。
+      - name: cache scons objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.SRC }}/bin/obj
+            ${{ env.SRC }}/.sconsign.dblite
+          key: obj-arm64v8-${{ hashFiles('frt/**', '.github/workflows/build.yml') }}
+
       - name: build arm64 (full)
         run: |
+          set -o pipefail
           cd "$SRC"
           scons platform=frt target=template_release \
                 frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
                 vulkan=false openxr=false optimize=speed debug_symbols=no \
                 -j"$(nproc)" 2>&1 | tee /tmp/build.log
-          rc=${PIPESTATUS[0]}
+          rc=$?
           echo "=========== build exit=$rc ==========="
           if [ "$rc" != "0" ]; then
             grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -120 || true
