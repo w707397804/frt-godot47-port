@@ -112,8 +112,9 @@ jobs:
           set -e
           export DEBIAN_FRONTEND=noninteractive
           echo "deb http://deb.debian.org/debian bullseye main contrib non-free" > /etc/apt/sources.list
-          echo "deb http://deb.debian.org/debian bullseye-updates main contrib non-free" >> /etc/apt/sources.list
-          echo "deb http://security.debian.org/debian-security bullseye-security main contrib non-free" >> /etc/apt/sources.list
+          # 刻意不写 bullseye-updates / bullseye-security：
+          # security 池已归档，metadata 还在但 .deb 全 404（实测 libsdl2 +deb11u2 拉不下来）。
+          # 只留 main，版本略旧但可用。
           dpkg --add-architecture arm64
           # bullseye 已进 LTS 末期，正式源偶尔失效 ⇒ 回退到 archive
           if ! apt-get update -qq; then
