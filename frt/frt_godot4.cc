@@ -692,8 +692,15 @@ extern "C" int frt_godot_main(int argc, char *argv[]) {
 	Error err = Main::setup(argv[0], argc - 1, &argv[1]);
 	if (err != OK)
 		return 255;
-	if (Main::start())
+	// Godot 4.1+ changed Main::start() from `bool should_run_loop` to
+	// `int exit_code`; success is EXIT_SUCCESS == 0. Truthiness testing it
+	// skips the whole main loop (boot logo + resource loads, then RC=0 exit).
+	// Mirrors platform/linuxbsd/godot_linuxbsd.cpp:121-126.
+	if (Main::start() == EXIT_SUCCESS) {
 		os.run();
+	} else {
+		os.set_exit_code(EXIT_FAILURE);
+	}
 	Main::cleanup();
 	return os.get_exit_code();
 }
