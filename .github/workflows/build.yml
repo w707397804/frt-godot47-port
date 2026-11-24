@@ -101,15 +101,12 @@ jobs:
           printf '%s\n' "deb [trusted=yes] $ARCHIVE bullseye main contrib non-free" > /etc/apt/sources.list
           printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
           apt-get update
-          # 镜像自带 libc6 +deb11u14 / perl-base +deb11u5，archive 只有 u11 / u3。
-          # ★ --allow-downgrades 只影响"装哪个版本"，**不会主动降级已安装的包** ⇒
-          #   必须先整轮 upgrade 把镜像自带版本降到 archive 版本，否则
-          #   libc6-dev 的 "Depends: libc6 (= 2.31-13+deb11u11)" 永远对不上 u14。
-          apt-get -y --allow-downgrades upgrade \
-            || apt-get install -y --allow-downgrades \
-                 libc6=2.31-13+deb11u11 libc6-dev=2.31-13+deb11u11 \
-                 perl=5.32.1-4+deb11u3 perl-base=5.32.1-4+deb11u3 \
-            || echo "!! 降级未完全成功，继续尝试正常安装"
+          # 镜像自带 libc6 +deb11u14 / perl-base +deb11u5 / perl +deb11u5，archive 只有 u11 / u3。
+          # ★★ 教训：`apt-get upgrade --allow-downgrades` 什么都不做却返回 0（"0 upgraded"），
+          #    它只考虑"更新"的候选版本 ⇒ 必须**显式给出版本号**才能真降级。
+          apt-get install -y --allow-downgrades \
+            libc6=2.31-13+deb11u11 libc6-dev=2.31-13+deb11u11 \
+            perl=5.32.1-4+deb11u3 perl-base=5.32.1-4+deb11u3
           apt-get install -y --allow-downgrades --no-install-recommends \
             ca-certificates curl git rsync python3 python3-pip file tar xz-utils \
             build-essential pkg-config gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
