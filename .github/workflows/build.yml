@@ -48,29 +48,8 @@ jobs:
           echo "--- platform/frt ---"
           ls "$SRC/platform/frt" | head -30
 
-      # 快速失败闸门：只编 FRT 平台自己的 .cc（十几秒），
-      # 免得适配代码写错要等全量引擎编完才报错。
-      # 目标名靠 `scons -n` 打印的编译命令行反推，避免硬编码 arch 后缀。
-      - name: smoke compile (platform/frt only)
-        run: |
-          cd "$SRC"
-          OBJ=$(scons platform=frt target=template_release use_llvm=yes \
-                       vulkan=false openxr=false -n -Q 2>/dev/null \
-                | grep -oE 'bin/obj/platform/frt/frt_godot4\.[^ "]*\.o' | head -1)
-          echo "smoke object = [$OBJ]"
-          if [ -z "$OBJ" ]; then
-            echo "!! 未能推导目标名，跳过 smoke，直接进全量编译"
-            exit 0
-          fi
-          scons platform=frt target=template_release use_llvm=yes \
-                vulkan=false openxr=false "$OBJ" 2>&1 | tee /tmp/smoke.log
-          rc=${PIPESTATUS[0]}
-          echo "=========== smoke exit=$rc ==========="
-          if [ "$rc" != "0" ]; then
-            grep -E 'error:|fatal error:|note:' /tmp/smoke.log | head -80 || true
-            exit "$rc"
-          fi
-
+      # 注意：不做"只编一个 .o"的冒烟闸门 —— scons 首个编的就是 platform/frt，
+      # 全量编译本身 20 秒内就会暴露平台代码错误，冒烟不但没提速还曾假绿过一次。
       - name: build (full)
         run: |
           cd "$SRC"
@@ -81,7 +60,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           echo "=========== build exit=$rc ==========="
           if [ "$rc" != "0" ]; then
-            grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -80 || true
+            grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -120 || true
             exit "$rc"
           fi
 
@@ -95,9 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log-x86_64
-          path: |
-            /tmp/build.log
-            /tmp/smoke.log
+          path: /tmp/build.log
           retention-days: 7
 
   arm64-cross:
@@ -111,29 +88,40 @@ jobs:
         run: |
           set -e
           export DEBIAN_FRONTEND=noninteractive
-          echo "deb http://deb.debian.org/debian bullseye main contrib non-free" > /etc/apt/sources.list
-          # 刻意不写 bullseye-updates / bullseye-security：
-          # security 池已归档，metadata 还在但 .deb 全 404（实测 libsdl2 +deb11u2 拉不下来）。
-          # 只留 main，版本略旧但可用。
-          dpkg --add-architecture arm64
-          # bullseye 已进 LTS 末期，正式源偶尔失效 ⇒ 回退到 archive
+
+          # bullseye 已从主镜像/安全源归档。两个已知坑：
+          #  1) deb.debian.org 上 bullseye 大概率 404 ⇒ 回退 archive.debian.org
+          #  2) archive 只有 libc6 +deb11u11，而 debian:bullseye 镜像自带 +deb11u14，
+          #     多架构共存要求 amd64/arm64 版本号完全一致 ⇒ 必须 --allow-downgrades
+          printf '%s\n' 'deb http://deb.debian.org/debian bullseye main contrib non-free' > /etc/apt/sources.list
           if ! apt-get update -qq; then
-            echo "!! 正式源失败，切 archive.debian.org"
-            echo "deb [trusted=yes] http://archive.debian.org/debian bullseye main contrib non-free" > /etc/apt/sources.list
-            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+            echo "!! 正式源不可用，切 archive.debian.org"
+            printf '%s\n' 'deb [trusted=yes] http://archive.debian.org/debian bullseye main contrib non-free' > /etc/apt/sources.list
+            printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
             apt-get update -qq
           fi
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl git rsync python3 python3-pip file \
-            build-essential pkg-config tar xz-utils \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            libsdl2-dev:arm64 zlib1g-dev:arm64
-          # EGL/GLESv2 的 dev 包在 bullseye 有两个可能名，逐档兜底
-          apt-get install -y --no-install-recommends libegl-dev:arm64 libgles-dev:arm64 \
-            || apt-get install -y --no-install-recommends libegl1-mesa-dev:arm64 libgles2-mesa-dev:arm64
+          dpkg --add-architecture arm64
+          apt-get update -qq || true
+
+          BASE="ca-certificates curl git rsync python3 python3-pip file build-essential pkg-config tar xz-utils gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zlib1g-dev:arm64 libsdl2-dev:arm64"
+          install_all() { apt-get install -y --allow-downgrades --no-install-recommends "$@"; }
+
+          if ! install_all $BASE; then
+            echo "!! archive 装不上，切 snapshot.debian.org（最后一次兜底）"
+            printf '%s\n' \
+              'deb [trusted=yes] http://snapshot.debian.org/archive/debian/20251001T000000Z bullseye main contrib non-free' \
+              'deb [trusted=yes] http://snapshot.debian.org/archive/debian-security/20251001T000000Z bullseye-security main contrib non-free' \
+              > /etc/apt/sources.list
+            apt-get update -qq
+            install_all $BASE
+          fi
+          # EGL/GLESv2 的 dev 包在 bullseye 有两套命名，逐档兜底
+          install_all libegl-dev:arm64 libgles-dev:arm64 \
+            || install_all libegl1-mesa-dev:arm64 libgles2-mesa-dev:arm64
           pip3 install -q "scons>=4.5"
+
           # FRT 的 configure_cross 会调 <triple>-pkg-config，Debian 没现成的，自己包一层。
-          # 用 PKG_CONFIG_LIBDIR 而不是 PATH，避免混进宿主 x86 的 .pc
+          # 用 PKG_CONFIG_LIBDIR（不是 PATH）避免混进宿主 x86 的 .pc
           printf '%s\n' \
             '#!/bin/sh' \
             'export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig' \
@@ -141,6 +129,7 @@ jobs:
             'exec pkg-config "$@"' \
             > /usr/local/bin/aarch64-linux-gnu-pkg-config
           chmod +x /usr/local/bin/aarch64-linux-gnu-pkg-config
+
           echo "--- toolchain ---"
           aarch64-linux-gnu-gcc --version | head -1
           scons --version | sed -n 2p
@@ -166,28 +155,6 @@ jobs:
           rsync -a --exclude=.git --exclude='.github' "$GITHUB_WORKSPACE/frt/" "$SRC/platform/frt/"
           ls "$SRC/platform/frt" | head -30
 
-      - name: smoke compile (platform/frt only)
-        run: |
-          cd "$SRC"
-          OBJ=$(scons platform=frt target=template_release \
-                       frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
-                       vulkan=false openxr=false -n -Q 2>/dev/null \
-                | grep -oE 'bin/obj/platform/frt/frt_godot4\.[^ "]*\.o' | head -1)
-          echo "smoke object = [$OBJ]"
-          if [ -z "$OBJ" ]; then
-            echo "!! 未能推导目标名，跳过 smoke，直接进全量编译"
-            exit 0
-          fi
-          scons platform=frt target=template_release \
-                frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
-                vulkan=false openxr=false "$OBJ" 2>&1 | tee /tmp/smoke.log
-          rc=${PIPESTATUS[0]}
-          echo "=========== smoke exit=$rc ==========="
-          if [ "$rc" != "0" ]; then
-            grep -E 'error:|fatal error:|note:' /tmp/smoke.log | head -80 || true
-            exit "$rc"
-          fi
-
       - name: build arm64 (full)
         run: |
           cd "$SRC"
@@ -198,17 +165,15 @@ jobs:
           rc=${PIPESTATUS[0]}
           echo "=========== build exit=$rc ==========="
           if [ "$rc" != "0" ]; then
-            grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -80 || true
+            grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -120 || true
             exit "$rc"
           fi
 
       - name: package + symbol audit
         run: |
           mkdir -p /tmp/out
-          find "$SRC/bin" -maxdepth 1 -type f -executable | head -20
           for f in "$SRC"/bin/*; do
             [ -f "$f" ] || continue
-            case "$(basename "$f")" in *.o|*.gen.*) continue ;; esac
             cp "$f" /tmp/out/ 2>/dev/null || true
           done
           ls -la /tmp/out
@@ -231,5 +196,4 @@ jobs:
           path: |
             /tmp/out
             /tmp/build.log
-            /tmp/smoke.log
           retention-days: 7

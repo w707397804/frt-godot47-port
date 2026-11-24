@@ -31,6 +31,11 @@ using namespace DisplayServerEnums;
 #include "drivers/unix/os_unix.h"
 #include "main/main.h"
 
+// Godot 4.7 不再通过 os_unix.h / main.h 间接带入 Input 与 InputEvent 家族，
+// 必须显式引入（4.1 时代靠传递包含就能编过）。
+#include "core/input/input.h"
+#include "core/input/input_event.h"
+
 namespace frt {
 
 static const char *default_audio_device = "default"; // TODO
@@ -51,7 +56,7 @@ public: // AudioDriverSW
 		mix_rate_ = GLOBAL_GET("audio/driver/mix_rate");
 		speaker_mode_ = SPEAKER_MODE_STEREO;
 		const int latency = GLOBAL_GET("audio/driver/output_latency");
-		const int samples = closest_power_of_2(latency * mix_rate_ / 1000);
+		const int samples = Math::closest_power_of_2(latency * mix_rate_ / 1000);
 		return audio_.init(mix_rate_, samples) ? OK : ERR_CANT_OPEN;
 	}
 	int get_mix_rate() const override {
@@ -196,7 +201,8 @@ public: // GraphicsContext
 	void init_context(int width, int height, VSyncMode mode) override {
 		os_.init_context_gl();
 		frt_resolve_symbols_gles3(get_proc_address);
-		RasterizerGLES3::make_current();
+		// 4.7 新增 p_gles_over_gl：false = 真 GLES3 驱动（我们是 dlopen 真 libGLESv2）
+		RasterizerGLES3::make_current(false);
 	}
 };
 #endif
@@ -305,7 +311,7 @@ public: // DisplayServer (implicit)
 	static void dispatch_events_func(const Ref<InputEvent> &event) {
 		display_server_->dispatch_events(event);
 	}
-	static DisplayServer *create_func(const String &rendering_driver, WindowMode mode, VSyncMode vsync_mode, uint32_t flags, const Vector2i *position, const Vector2i &resolution, int screen, Error &error) {
+	static DisplayServer *create_func(const String &rendering_driver, WindowMode mode, VSyncMode vsync_mode, uint32_t flags, const Vector2i *position, const Vector2i &resolution, int screen, DisplayServerEnums::Context context, int64_t parent_window, Error &error) {
 		display_server_ = memnew(Godot4_DisplayServer(rendering_driver, mode, vsync_mode, flags, position, resolution, screen, error));
 		if (error != OK)
 			warn("display server creation failed.");
@@ -382,10 +388,10 @@ public: // DisplayServer
 	BitField<MouseButtonMask> mouse_get_button_state() const override {
 		return (BitField<MouseButtonMask>)mouse_state_;
 	}
-	void mouse_set_mode(MouseMode mode) override {
+	void mouse_set_mode(DisplayServerEnums::MouseMode mode) override {
 		os_.set_mouse_mode(map_mouse_mode(mode));
 	}
-	MouseMode mouse_get_mode() const override {
+	DisplayServerEnums::MouseMode mouse_get_mode() const override {
 		return map_mouse_os_mode(os_.get_mouse_mode());
 	}
 	void window_set_title(const String &title, WindowID window) override {
@@ -499,9 +505,7 @@ public: // DisplayServer
 	void release_rendering_thread() override {
 		context_->release_current();
 	}
-	void make_rendering_thread() override {
-		context_->make_current();
-	}
+	// Godot 4.7 已从 DisplayServer 移除 make_rendering_thread()，不能再 override。
 	void swap_buffers() override {
 		context_->swap_buffers();
 	}
