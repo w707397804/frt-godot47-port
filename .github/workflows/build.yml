@@ -17,13 +17,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            build-essential scons clang lld pkg-config rsync \
+            build-essential clang lld pkg-config rsync python3-pip \
             libsdl2-dev libegl1-mesa-dev libgles2-mesa-dev zlib1g-dev
+          # Godot 4.7 要求 SCons >= 4.4，apt 源里的 4.0.1 不够
+          sudo pip3 install -q "scons>=4.5"
 
       - name: tool versions
         run: |
-          scons --version | head -5
-          clang --version | head -2
+          scons --version | head -3
+          clang --version | head -1
           pkg-config --modversion sdl2
 
       - name: fetch godot 4.7 source
@@ -39,23 +41,22 @@ jobs:
           rm -rf "$SRC/platform/frt"
           mkdir -p "$SRC/platform/frt"
           rsync -a --exclude=.git --exclude='.github' "$GITHUB_WORKSPACE/frt/" "$SRC/platform/frt/"
-          echo "--- platform/frt 内容 ---"
+          echo "--- platform/frt ---"
           ls "$SRC/platform/frt" | head -30
 
       - name: build
         run: |
           cd "$SRC"
-          set +e
           scons platform=frt target=template_release use_llvm=yes -j"$(nproc)" 2>&1 | tee /tmp/build.log
           rc=${PIPESTATUS[0]}
-          set -e
-          echo "BUILD_RC=$rc" >> "$GITHUB_ENV"
           echo "=========== build exit=$rc ==========="
-          echo "--- 错误行汇总 ---"
-          grep -E 'error:|Error [0-9]|AttributeError|ImportError|fatal error' /tmp/build.log | head -40 || true
+          if [ "$rc" != "0" ]; then
+            echo "--- error 行 ---"
+            grep -E 'error:|fatal error:|AttributeError|ImportError|ImportError|NameError|scons: \*\*\*' /tmp/build.log | head -60 || true
+            exit "$rc"
+          fi
 
       - name: list binaries
-        if: env.BUILD_RC == '0'
         run: |
           echo "--- bin/ ---"
           find "$SRC/bin" -maxdepth 1 -type f | head -20
