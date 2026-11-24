@@ -12,6 +12,10 @@ concurrency:
 jobs:
   x86_64-native:
     name: x86_64 native (expose API errors fast)
+    # 该 job 已完成历史使命（2026-11-25 全绿：完整编译 + 链接通过，证明 4.7 适配无误）。
+    # 之后每轮都为它白烧 ~22 分钟，且 concurrency 会把正在跑的 arm64 一起取消 ⇒
+    # 只在手动触发（workflow_dispatch）时跑，push 只跑 arm64。
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 240
     steps:
@@ -123,8 +127,10 @@ jobs:
             dpkg -x /tmp/x.deb /
             echo "  展开 $1  <- $_f"
           }
-          # EGL/GLES 的 dev 包在 bullseye 有两套命名，两套都试（重复展开无害）
+          # EGL/GLES 的 dev 包在 bullseye 有两套命名，两套都试（重复展开无害）。
+          # libglvnd-dev 必需：KHR/khrplatform.h 只在它里面，少了 GLES3/gl3platform.h 就编不过。
           for p in libsdl2-dev libsdl2-2.0-0 zlib1g-dev zlib1g \
+                   libglvnd-dev libgl-dev libglx-dev libopengl-dev \
                    libegl-dev libegl1 libgles-dev libgles2 \
                    libegl1-mesa-dev libgles2-mesa-dev; do
             extract_arm64 "$p"
@@ -132,6 +138,7 @@ jobs:
 
           # 硬断言：缺任何一个都直接红，不许拖到链接阶段才发现
           for need in /usr/include/SDL2/SDL.h /usr/include/GLES3/gl3.h \
+                      /usr/include/KHR/khrplatform.h \
                       /usr/lib/aarch64-linux-gnu/libSDL2.so \
                       /usr/lib/aarch64-linux-gnu/libEGL.so \
                       /usr/lib/aarch64-linux-gnu/libGLESv2.so; do
