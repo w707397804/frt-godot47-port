@@ -100,6 +100,12 @@ def configure_misc(env):
         env['LD'] = 'clang++'
     if env['use_static_cpp']:
         env.Append(LINKFLAGS=['-static-libgcc', '-static-libstdc++'])
+    # Godot 4.7 默认 arch="auto"（产物名里的 .auto. 就是它），而 thirdparty/zstd 的
+    # SCsub 用 env["arch"] 精确匹配来决定要不要编 x86 的 .S 汇编循环：
+    # arch=auto ⇒ 不编 .S；但 C 侧 __x86_64__ 仍把 ZSTD_ENABLE_ASM_X86_64_BMI2 打开
+    # ⇒ 链接期 HUF_decompress4X{1,2}_usingDTable_internal_fast_asm_loop 未定义。
+    # 直接关掉 zstd 的 asm 路径（退回 C 实现，解压差个位数百分比，本项目无所谓）。
+    env.Append(CPPDEFINES=['ZSTD_DISABLE_ASM'])
 
 def configure(env):
 	configure_compiler(env)
