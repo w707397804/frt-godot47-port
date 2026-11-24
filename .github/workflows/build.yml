@@ -97,6 +97,10 @@ jobs:
       - name: bootstrap toolchain
         run: |
           set -e
+          # ★ GitHub 的 bash 模板自带 -o pipefail，于是 `ldd --version | head -1` 这类
+          #   「读者提前退出」的管道会以 SIGPIPE(141) 结束并把整步判失败。
+          #   本步只是一堆安装/探测，不需要 pipefail。
+          set +o pipefail
           export DEBIAN_FRONTEND=noninteractive
           ARCHIVE=http://archive.debian.org/debian
 
@@ -127,7 +131,7 @@ jobs:
           echo "arm64 索引条目数: $(grep -c '^Package: ' /tmp/Pkgs-arm64)"
 
           extract_arm64() {
-            _f=$(grep -A60 "^Package: $1\$" /tmp/Pkgs-arm64 | grep -m1 '^Filename:' | awk '{print $2}')
+            _f=$( (grep -A60 "^Package: $1\$" /tmp/Pkgs-arm64 | grep -m1 '^Filename:' | awk '{print $2}') || true )
             if [ -z "$_f" ]; then echo "  (跳过 $1: 索引里没有)"; return 0; fi
             curl -fsSL -o /tmp/x.deb "$ARCHIVE/$_f"
             dpkg -x /tmp/x.deb /
