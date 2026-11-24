@@ -35,6 +35,7 @@ using namespace DisplayServerEnums;
 // 必须显式引入（4.1 时代靠传递包含就能编过）。
 #include "core/input/input.h"
 #include "core/input/input_event.h"
+#include "core/os/main_loop.h"
 
 namespace frt {
 
@@ -56,7 +57,7 @@ public: // AudioDriverSW
 		mix_rate_ = GLOBAL_GET("audio/driver/mix_rate");
 		speaker_mode_ = SPEAKER_MODE_STEREO;
 		const int latency = GLOBAL_GET("audio/driver/output_latency");
-		const int samples = Math::closest_power_of_2(latency * mix_rate_ / 1000);
+		const int samples = Math::closest_power_of_2((uint32_t)(latency * mix_rate_ / 1000));
 		return audio_.init(mix_rate_, samples) ? OK : ERR_CANT_OPEN;
 	}
 	int get_mix_rate() const override {

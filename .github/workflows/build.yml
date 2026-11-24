@@ -88,37 +88,49 @@ jobs:
         run: |
           set -e
           export DEBIAN_FRONTEND=noninteractive
+          ARCHIVE=http://archive.debian.org/debian
 
-          # bullseye 已从主镜像/安全源归档。两个已知坑：
-          #  1) deb.debian.org 上 bullseye 大概率 404 ⇒ 回退 archive.debian.org
-          #  2) archive 只有 libc6 +deb11u11，而 debian:bullseye 镜像自带 +deb11u14，
-          #     多架构共存要求 amd64/arm64 版本号完全一致 ⇒ 必须 --allow-downgrades
-          printf '%s\n' 'deb http://deb.debian.org/debian bullseye main contrib non-free' > /etc/apt/sources.list
-          if ! apt-get update -qq; then
-            echo "!! 正式源不可用，切 archive.debian.org"
-            printf '%s\n' 'deb [trusted=yes] http://archive.debian.org/debian bullseye main contrib non-free' > /etc/apt/sources.list
-            printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
-            apt-get update -qq
-          fi
-          dpkg --add-architecture arm64
-          apt-get update -qq || true
+          # ★ 核心决定：**不启用 arm64 外来架构**。
+          # 之前 dpkg --add-architecture arm64 会要求 libc6:amd64 与 libc6:arm64 版本号
+          # 逐字节相同；而 debian:bullseye 镜像自带 +deb11u14（来自已归档的 security），
+          # archive.debian.org 只有 u11 ⇒ 依赖求解死锁（--allow-downgrades 也救不了）。
+          # 改法：libc/工具链走 Debian 官方的 *-cross 包（Architecture: amd64，内含
+          # aarch64 sysroot，不进外来架构体系）；SDL2/EGL/GLES/zlib 的 arm64 dev 包
+          # 直接 curl .deb + dpkg -x 展开，完全绕开 apt 依赖求解器。
 
-          BASE="ca-certificates curl git rsync python3 python3-pip file build-essential pkg-config tar xz-utils gcc-aarch64-linux-gnu g++-aarch64-linux-gnu zlib1g-dev:arm64 libsdl2-dev:arm64"
-          install_all() { apt-get install -y --allow-downgrades --no-install-recommends "$@"; }
-
-          if ! install_all $BASE; then
-            echo "!! archive 装不上，切 snapshot.debian.org（最后一次兜底）"
-            printf '%s\n' \
-              'deb [trusted=yes] http://snapshot.debian.org/archive/debian/20251001T000000Z bullseye main contrib non-free' \
-              'deb [trusted=yes] http://snapshot.debian.org/archive/debian-security/20251001T000000Z bullseye-security main contrib non-free' \
-              > /etc/apt/sources.list
-            apt-get update -qq
-            install_all $BASE
-          fi
-          # EGL/GLESv2 的 dev 包在 bullseye 有两套命名，逐档兜底
-          install_all libegl-dev:arm64 libgles-dev:arm64 \
-            || install_all libegl1-mesa-dev:arm64 libgles2-mesa-dev:arm64
+          printf '%s\n' "deb [trusted=yes] $ARCHIVE bullseye main contrib non-free" > /etc/apt/sources.list
+          printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git rsync python3 python3-pip file tar xz-utils \
+            build-essential pkg-config gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           pip3 install -q "scons>=4.5"
+
+          # arm64 索引只用来查 pool 路径，不喂给 apt 求解器
+          curl -fsSL "$ARCHIVE/dists/bullseye/main/binary-arm64/Packages.xz" | xz -d > /tmp/Pkgs-arm64
+          echo "arm64 索引条目数: $(grep -c '^Package: ' /tmp/Pkgs-arm64)"
+
+          extract_arm64() {
+            _f=$(grep -A60 "^Package: $1\$" /tmp/Pkgs-arm64 | grep -m1 '^Filename:' | awk '{print $2}')
+            if [ -z "$_f" ]; then echo "  (跳过 $1: 索引里没有)"; return 0; fi
+            curl -fsSL -o /tmp/x.deb "$ARCHIVE/$_f"
+            dpkg -x /tmp/x.deb /
+            echo "  展开 $1  <- $_f"
+          }
+          # EGL/GLES 的 dev 包在 bullseye 有两套命名，两套都试（重复展开无害）
+          for p in libsdl2-dev libsdl2-2.0-0 zlib1g-dev zlib1g \
+                   libegl-dev libegl1 libgles-dev libgles2 \
+                   libegl1-mesa-dev libgles2-mesa-dev; do
+            extract_arm64 "$p"
+          done
+
+          # 硬断言：缺任何一个都直接红，不许拖到链接阶段才发现
+          for need in /usr/include/SDL2/SDL.h /usr/include/GLES3/gl3.h \
+                      /usr/lib/aarch64-linux-gnu/libSDL2.so \
+                      /usr/lib/aarch64-linux-gnu/libEGL.so \
+                      /usr/lib/aarch64-linux-gnu/libGLESv2.so; do
+            test -e "$need" || { echo "!! 缺 $_need"; exit 1; }
+          done
 
           # FRT 的 configure_cross 会调 <triple>-pkg-config，Debian 没现成的，自己包一层。
           # 用 PKG_CONFIG_LIBDIR（不是 PATH）避免混进宿主 x86 的 .pc
