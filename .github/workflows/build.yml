@@ -5,11 +5,15 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   x86_64-native:
     name: x86_64 native (expose API errors fast)
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +28,7 @@ jobs:
 
       - name: tool versions
         run: |
-          scons --version | head -3
+          scons --version | sed -n 2p
           clang --version | head -1
           pkg-config --modversion sdl2
 
@@ -44,21 +48,45 @@ jobs:
           echo "--- platform/frt ---"
           ls "$SRC/platform/frt" | head -30
 
-      - name: build
+      # 快速失败闸门：只编 FRT 平台自己的 .cc（十几秒），
+      # 免得适配代码写错要等全量引擎编完才报错。
+      # 目标名靠 `scons -n` 打印的编译命令行反推，避免硬编码 arch 后缀。
+      - name: smoke compile (platform/frt only)
         run: |
           cd "$SRC"
-          scons platform=frt target=template_release use_llvm=yes -j"$(nproc)" 2>&1 | tee /tmp/build.log
+          OBJ=$(scons platform=frt target=template_release use_llvm=yes \
+                       vulkan=false openxr=false -n -Q 2>/dev/null \
+                | grep -oE 'bin/obj/platform/frt/frt_godot4\.[^ "]*\.o' | head -1)
+          echo "smoke object = [$OBJ]"
+          if [ -z "$OBJ" ]; then
+            echo "!! 未能推导目标名，跳过 smoke，直接进全量编译"
+            exit 0
+          fi
+          scons platform=frt target=template_release use_llvm=yes \
+                vulkan=false openxr=false "$OBJ" 2>&1 | tee /tmp/smoke.log
+          rc=${PIPESTATUS[0]}
+          echo "=========== smoke exit=$rc ==========="
+          if [ "$rc" != "0" ]; then
+            grep -E 'error:|fatal error:|note:' /tmp/smoke.log | head -80 || true
+            exit "$rc"
+          fi
+
+      - name: build (full)
+        run: |
+          cd "$SRC"
+          # vulkan=false 必须有：Godot 默认 vulkan=true，会定义 VULKAN_ENABLED，
+          # 进而 include 4.7 里已改名的 drivers/vulkan/rendering_device_vulkan.h
+          scons platform=frt target=template_release use_llvm=yes \
+                vulkan=false openxr=false -j"$(nproc)" 2>&1 | tee /tmp/build.log
           rc=${PIPESTATUS[0]}
           echo "=========== build exit=$rc ==========="
           if [ "$rc" != "0" ]; then
-            echo "--- error 行 ---"
-            grep -E 'error:|fatal error:|AttributeError|ImportError|ImportError|NameError|scons: \*\*\*' /tmp/build.log | head -60 || true
+            grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -80 || true
             exit "$rc"
           fi
 
       - name: list binaries
         run: |
-          echo "--- bin/ ---"
           find "$SRC/bin" -maxdepth 1 -type f | head -20
           file "$SRC"/bin/* 2>/dev/null | head -10
 
@@ -67,5 +95,140 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log-x86_64
-          path: /tmp/build.log
+          path: |
+            /tmp/build.log
+            /tmp/smoke.log
+          retention-days: 7
+
+  arm64-cross:
+    name: arm64 cross (bullseye glibc 2.31, static libstdc++)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    container:
+      image: debian:bullseye
+    steps:
+      - name: bootstrap toolchain
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          echo "deb http://deb.debian.org/debian bullseye main contrib non-free" > /etc/apt/sources.list
+          echo "deb http://deb.debian.org/debian bullseye-updates main contrib non-free" >> /etc/apt/sources.list
+          echo "deb http://security.debian.org/debian-security bullseye-security main contrib non-free" >> /etc/apt/sources.list
+          dpkg --add-architecture arm64
+          # bullseye 已进 LTS 末期，正式源偶尔失效 ⇒ 回退到 archive
+          if ! apt-get update -qq; then
+            echo "!! 正式源失败，切 archive.debian.org"
+            echo "deb [trusted=yes] http://archive.debian.org/debian bullseye main contrib non-free" > /etc/apt/sources.list
+            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+            apt-get update -qq
+          fi
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git rsync python3 python3-pip file \
+            build-essential pkg-config tar xz-utils \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libsdl2-dev:arm64 zlib1g-dev:arm64
+          # EGL/GLESv2 的 dev 包在 bullseye 有两个可能名，逐档兜底
+          apt-get install -y --no-install-recommends libegl-dev:arm64 libgles-dev:arm64 \
+            || apt-get install -y --no-install-recommends libegl1-mesa-dev:arm64 libgles2-mesa-dev:arm64
+          pip3 install -q "scons>=4.5"
+          # FRT 的 configure_cross 会调 <triple>-pkg-config，Debian 没现成的，自己包一层。
+          # 用 PKG_CONFIG_LIBDIR 而不是 PATH，避免混进宿主 x86 的 .pc
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig' \
+            'export PKG_CONFIG_SYSROOT_DIR=/' \
+            'exec pkg-config "$@"' \
+            > /usr/local/bin/aarch64-linux-gnu-pkg-config
+          chmod +x /usr/local/bin/aarch64-linux-gnu-pkg-config
+          echo "--- toolchain ---"
+          aarch64-linux-gnu-gcc --version | head -1
+          scons --version | sed -n 2p
+          ldd --version | head -1
+          echo "--- sdl2 (arm64) via wrapper ---"
+          aarch64-linux-gnu-pkg-config --modversion sdl2
+          aarch64-linux-gnu-pkg-config --libs sdl2
+
+      - uses: actions/checkout@v4
+
+      - name: fetch godot 4.7 source
+        run: |
+          curl -sSL -o /tmp/g.tar.xz \
+            https://github.com/godotengine/godot/releases/download/4.7-stable/godot-4.7-stable.tar.xz
+          tar -xf /tmp/g.tar.xz
+          echo "SRC=$PWD/godot-4.7-stable" >> "$GITHUB_ENV"
+          ls -d godot-4.7-stable
+
+      - name: install frt into platform/frt
+        run: |
+          rm -rf "$SRC/platform/frt"
+          mkdir -p "$SRC/platform/frt"
+          rsync -a --exclude=.git --exclude='.github' "$GITHUB_WORKSPACE/frt/" "$SRC/platform/frt/"
+          ls "$SRC/platform/frt" | head -30
+
+      - name: smoke compile (platform/frt only)
+        run: |
+          cd "$SRC"
+          OBJ=$(scons platform=frt target=template_release \
+                       frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
+                       vulkan=false openxr=false -n -Q 2>/dev/null \
+                | grep -oE 'bin/obj/platform/frt/frt_godot4\.[^ "]*\.o' | head -1)
+          echo "smoke object = [$OBJ]"
+          if [ -z "$OBJ" ]; then
+            echo "!! 未能推导目标名，跳过 smoke，直接进全量编译"
+            exit 0
+          fi
+          scons platform=frt target=template_release \
+                frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
+                vulkan=false openxr=false "$OBJ" 2>&1 | tee /tmp/smoke.log
+          rc=${PIPESTATUS[0]}
+          echo "=========== smoke exit=$rc ==========="
+          if [ "$rc" != "0" ]; then
+            grep -E 'error:|fatal error:|note:' /tmp/smoke.log | head -80 || true
+            exit "$rc"
+          fi
+
+      - name: build arm64 (full)
+        run: |
+          cd "$SRC"
+          scons platform=frt target=template_release \
+                frt_arch=arm64v8 frt_cross=auto use_llvm=no use_static_cpp=yes \
+                vulkan=false openxr=false optimize=speed debug_symbols=no \
+                -j"$(nproc)" 2>&1 | tee /tmp/build.log
+          rc=${PIPESTATUS[0]}
+          echo "=========== build exit=$rc ==========="
+          if [ "$rc" != "0" ]; then
+            grep -E 'error:|fatal error:|scons: \*\*\*' /tmp/build.log | head -80 || true
+            exit "$rc"
+          fi
+
+      - name: package + symbol audit
+        run: |
+          mkdir -p /tmp/out
+          find "$SRC/bin" -maxdepth 1 -type f -executable | head -20
+          for f in "$SRC"/bin/*; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in *.o|*.gen.*) continue ;; esac
+            cp "$f" /tmp/out/ 2>/dev/null || true
+          done
+          ls -la /tmp/out
+          aarch64-linux-gnu-strip /tmp/out/* 2>/dev/null || true
+          for f in /tmp/out/*; do
+            echo "=== $(basename "$f") ==="
+            file "$f"
+            echo "--- GLIBC 需求上界（掌机 = 2.33，超过就跑不了）---"
+            aarch64-linux-gnu-objdump -T "$f" 2>/dev/null \
+              | grep -o 'GLIBC_2\.[0-9]*' | sort -u | tail -5
+            echo "--- GLIBCXX 需求（静态链接应为空）---"
+            aarch64-linux-gnu-objdump -T "$f" 2>/dev/null \
+              | grep -o 'GLIBCXX_[0-9.]*' | sort -u | tail -5
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frt-arm64
+          path: |
+            /tmp/out
+            /tmp/build.log
+            /tmp/smoke.log
           retention-days: 7
