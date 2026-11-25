@@ -532,7 +532,8 @@ public:
 			case SDL_JOYBUTTONUP:
 			case SDL_JOYDEVICEADDED:
 			case SDL_JOYDEVICEREMOVED:
-				// js_event(ev); Disabled all Joysticks to allow GPTOKEYB remapping for broken SDL Mappings on RK3326 devices
+				// 原厂 TRIMUI OS 没有 gptokeyb，按键只走 js0；必须把 joystick 事件送进 Godot。
+				js_event(ev);
 				break;
 			case SDL_QUIT:
 				handler_->handle_quit_event();
