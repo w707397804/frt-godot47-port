@@ -26,6 +26,8 @@
  */
 
 #include <SDL.h>
+#include <cstdio>
+#include <cstdlib>
 #ifdef VULKAN_ENABLED
 #include <SDL_vulkan.h>
 #endif
@@ -222,6 +224,40 @@ ExitShortcut parse_exit_shortcut() {
 	return ES_Esc;
 }
 
+// ---- FRT 手柄键位重映射 / 调试（TrimUI 原厂系统）----
+// FRT_JOY_BUTTON_MAP: 逗号分隔，第 i 项 = raw 按钮 i 要发给 Godot 的按钮号。
+// FRT_JOY_DEBUG=1: 打印 SDL 原始/映射后的编号与值到 stderr。
+int map_js_button(int p_raw) {
+	static int table[64];
+	static bool ready = false;
+	if (!ready) {
+		ready = true;
+		for (int i = 0; i < 64; i++)
+			table[i] = i;
+		const char *s = getenv("FRT_JOY_BUTTON_MAP");
+		if (s && *s) {
+			int i = 0;
+			const char *p = s;
+			while (*p && i < 64) {
+				char *end = nullptr;
+				long v = strtol(p, &end, 10);
+				if (end == p)
+					break;
+				table[i++] = (int)v;
+				p = end;
+				while (*p == ',' || *p == ' ')
+					p++;
+			}
+		}
+	}
+	return (p_raw >= 0 && p_raw < 64) ? table[p_raw] : p_raw;
+}
+
+void joystick_debug(const char *p_what, int p_raw, int p_mapped, int p_value) {
+	if (getenv("FRT_JOY_DEBUG"))
+		fprintf(stderr, "FRT_JOY %s raw=%d mapped=%d value=%d\n", p_what, p_raw, p_mapped, p_value);
+}
+
 class OS_FRT {
 private:
 	static const int MAX_JOYSTICKS = 16;
@@ -351,6 +387,7 @@ private:
 				return;
 			int axis = ev.jaxis.axis;
 			float value = (float)ev.jaxis.value / 32768.0f;
+			joystick_debug("axis", id, axis, (int)ev.jaxis.value);
 			handler_->handle_js_axis_event(id, axis, value);
 			} break;
 		case SDL_JOYHATMOTION: {
@@ -385,14 +422,17 @@ private:
 				mask = HatLeft | HatDown;
 				break;
 			}
+			joystick_debug("hat", ev.jhat.hat, (int)mask, ev.jhat.value);
 			handler_->handle_js_hat_event(id, mask);
 			} break;
 		case SDL_JOYBUTTONDOWN:
 		case SDL_JOYBUTTONUP: {
 			if ((id = get_js_id(ev.jbutton.which)) < 0)
 				return;
-			int button = ev.jbutton.button;
+			int raw_button = ev.jbutton.button;
+			int button = map_js_button(raw_button);
 			bool pressed = ev.jbutton.state == SDL_PRESSED;
+			joystick_debug("button", raw_button, button, pressed ? 1 : 0);
 			handler_->handle_js_button_event(id, button, pressed);
 			} break;
 		case SDL_JOYDEVICEADDED: {
